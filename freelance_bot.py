@@ -1,31 +1,33 @@
 #!/usr/bin/env python3
-"""
-freelance.ru → Telegram бот
-Мониторит новые заказы, фильтрует по категориям,
-генерирует черновик отклика через Groq AI и шлёт в Telegram.
-"""
-
-import feedparser
 import requests
 import sqlite3
 import time
-import re
 import json
+from bs4 import BeautifulSoup
 from datetime import datetime
 
-TELEGRAM_TOKEN  = "8313581959:AAHeGEHYMA6LW_ao2B9V9DbmqyETEBosauY"
-TELEGRAM_CHAT   = "8618412497"
-GROQ_KEY        = "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"
+TELEGRAM_TOKEN = "8313581959:AAHeGEHYMA6LW_ao2B9V9DbmqyETEBosauY"
+TELEGRAM_CHAT  = "8618412497"
+GROQ_KEY       = "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"
 
-RSS_FEEDS = [
-    "https://freelance.ru/rss/projects.xml",
+URLS = [
+    "https://freelance.ru/projects/?category=1",
+    "https://freelance.ru/projects/?category=12",
 ]
 
-CATEGORIES = [
-    "веб-разработка",
-    "продуктовый дизайн",
-    "ит и разработка",
-]
+COOKIES = {
+    "_ym_uid": "176313075684127283",
+    "_ym_d": "1763130756",
+    "_ga": "GA1.2.1009870395.1763130756",
+    "__upin": "g8Drf+ZD5HIaawm6Ub9dVA",
+    "ma_id_api": "U4MBCs5tNgMpQWpQOLHoUcfX4MBaENzBpAnuvdMeiVI88ONBGYWxh4a2x6py8u1EFSrnm2Ez/q2UFbHyRxhA6MFIFcyVXZq2aPp6poV1Al4NcT84H59jkvt5mTMnUTorbP0LfLooRby1DILyw/kHAsqUViaLjsK1acBpo4krMY4E5hfbihysjTKtkCN/C7tB8wx5TVq7AvwtK5vCc8aNmWUZ+rYQ5X9c3gO8BFOgQ8hQjE3TKcdd4GPlbseilgunThapslX9T27MfjDtTa812bM3PV/1HxkjuTIqLcaFw+b/CiS3oYxGSXh/UgvvIZBZ+XVjWSVmZf752Wpr0rGjBA==",
+    "ma_id": "9719737151771604762534",
+    "user_id": "H8BpTWm35kyX/AHECpg6Ag==",
+    "__ddg9_": "89.204.89.218",
+    "_ym_visorc": "w",
+    "__ddg8_": "D18GVmQNpc7rOB1r",
+    "__ddg10_": "1778406767",
+}
 
 DEVELOPER_BIO = """
 Меня зовут Дмитрий Бушин — fullstack-разработчик с 4+ годами опыта (известен как Trah1ch).
@@ -34,9 +36,16 @@ DEVELOPER_BIO = """
 Портфолио: https://trah1ch.dev/ | GitHub: github.com/DiDeRMad | Telegram: @DmBusha
 """
 
-CHECK_INTERVAL = 300
+CHECK_INTERVAL = 120
 DB_FILE        = "seen_jobs.db"
 STATS_FILE     = "stats.json"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "ru-RU,ru;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://freelance.ru/",
+}
 
 def load_stats():
     try:
@@ -62,10 +71,6 @@ def mark_seen(conn, job_id):
     conn.execute("INSERT OR IGNORE INTO seen VALUES (?,?)", (job_id, datetime.now().isoformat()))
     conn.commit()
 
-def matches_category(text):
-    t = text.lower()
-    return any(c in t for c in CATEGORIES)
-
 def generate_cover_letter(title, description):
     try:
         resp = requests.post(
@@ -76,7 +81,7 @@ def generate_cover_letter(title, description):
                 "max_tokens": 600,
                 "messages": [
                     {"role": "system", "content": f"Ты помогаешь писать отклики на фриланс-заказы. Информация о разработчике:\n{DEVELOPER_BIO}"},
-                    {"role": "user", "content": f"Напиши короткий (5-7 предложений) профессиональный отклик на заказ. Будь конкретным — упомяни детали из описания. Не используй шаблонные фразы. Заканчивай предложением обсудить детали.\n\nЗаказ: {title}\nОписание: {description[:1000]}\n\nНапиши только текст отклика."}
+                    {"role": "user", "content": f"Напиши короткий (5-7 предложений) профессиональный отклик. Будь конкретным. Не используй шаблонные фразы. Заканчивай предложением обсудить детали.\n\nЗаказ: {title}\nОписание: {description[:1000]}\n\nНапиши только текст отклика."}
                 ]
             },
             timeout=30
@@ -90,81 +95,95 @@ def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
     for chunk in chunks:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT, "text": chunk, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=10).raise_for_status()
+        requests.post(url, json={
+            "chat_id": TELEGRAM_CHAT,
+            "text": chunk,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }, timeout=10).raise_for_status()
         time.sleep(0.5)
 
-def process_feeds(conn, stats):
+def scrape_page(url):
+    jobs = []
+    try:
+        resp = requests.get(url, headers=HEADERS, cookies=COOKIES, timeout=15)
+        resp.encoding = "utf-8"
+        soup = BeautifulSoup(resp.text, "html.parser")
+        print(f"    Страница: {soup.title.string if soup.title else 'нет заголовка'}")
+
+        items = (soup.select("div.b-post") or
+                 soup.select("article.project") or
+                 soup.select(".task-item") or
+                 soup.select(".project"))
+        print(f"    Блоков найдено: {len(items)}")
+
+        for item in items:
+            title_tag = (item.select_one("h2 a") or item.select_one("h3 a") or
+                        item.select_one(".title a") or item.select_one("a.b-post__title"))
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+            link  = title_tag.get("href", "")
+            if link and not link.startswith("http"):
+                link = "https://freelance.ru" + link
+            desc_tag = (item.select_one(".b-post__body") or item.select_one(".description") or item.select_one("p"))
+            desc = desc_tag.get_text(strip=True) if desc_tag else ""
+            budget_tag = item.select_one(".b-post__price") or item.select_one(".price")
+            budget = budget_tag.get_text(strip=True) if budget_tag else ""
+            jobs.append({"id": link, "title": title, "link": link, "desc": desc, "budget": budget})
+    except Exception as e:
+        print(f"[!] Ошибка: {e}")
+    return jobs
+
+def process_all(conn, stats):
     new_count = 0
-    for feed_url in RSS_FEEDS:
-        try:
-            feed = feedparser.parse(feed_url)
-        except Exception as e:
-            print(f"[RSS] Ошибка: {e}")
-            continue
-
-        for entry in feed.entries:
-            job_id = entry.get("id") or entry.get("link", "")
-            if not job_id or is_seen(conn, job_id):
+    for url in URLS:
+        print(f"  Парсю: {url}")
+        jobs = scrape_page(url)
+        for job in jobs:
+            if is_seen(conn, job["id"]):
                 continue
-
-            title = entry.get("title", "Без названия")
-            link  = entry.get("link", "")
-            desc  = re.sub(r"<[^>]+>", "", entry.get("summary", ""))
-
-            if not matches_category(title + " " + desc):
-                mark_seen(conn, job_id)
-                continue
-
-            print(f"[+] Новый заказ: {title}")
-            cover = generate_cover_letter(title, desc)
-
+            print(f"[+] Новый: {job['title']}")
+            cover = generate_cover_letter(job["title"], job["desc"])
+            budget_str = f"\n💰 <b>Бюджет:</b> {job['budget']}" if job["budget"] else ""
             msg = (
                 f"🆕 <b>Новый заказ на freelance.ru</b>\n\n"
-                f"📌 <b>{title}</b>\n"
-                f"🔗 {link}\n\n"
-                f"📝 <b>Описание:</b>\n{desc[:600]}{'...' if len(desc) > 600 else ''}\n\n"
+                f"📌 <b>{job['title']}</b>\n"
+                f"🔗 {job['link']}{budget_str}\n\n"
+                f"📝 <b>Описание:</b>\n{job['desc'][:600]}{'...' if len(job['desc']) > 600 else ''}\n\n"
                 f"─────────────────────\n"
                 f"✍️ <b>Черновик отклика:</b>\n\n{cover}"
             )
-
             try:
                 send_telegram(msg)
-                print(f"    ✅ Отправлено в Telegram")
+                print(f"    ✅ Отправлено")
                 stats["total_responses"] += 1
             except Exception as e:
-                print(f"    ❌ Telegram ошибка: {e}")
-
+                print(f"    ❌ Ошибка: {e}")
             stats["total_jobs"] += 1
-            stats["jobs"].insert(0, {"title": title, "link": link, "time": datetime.now().strftime("%d.%m.%Y %H:%M"), "cover": cover[:200] + "..." if len(cover) > 200 else cover})
+            stats["jobs"].insert(0, {"title": job["title"], "link": job["link"], "time": datetime.now().strftime("%d.%m.%Y %H:%M"), "cover": cover[:200]})
             stats["jobs"] = stats["jobs"][:50]
             save_stats(stats)
-            mark_seen(conn, job_id)
+            mark_seen(conn, job["id"])
             new_count += 1
-            time.sleep(1)
-
+            time.sleep(2)
     return new_count
 
 def main():
     print("🤖 Freelance.ru бот запущен")
-    print(f"   Категории: {', '.join(CATEGORIES)}")
-    print(f"   Интервал: {CHECK_INTERVAL} сек\n")
-
     conn = init_db()
     stats = load_stats()
-
     try:
-        send_telegram("✅ <b>Freelance-бот запущен!</b>\nЖду новые заказы на freelance.ru...")
+        send_telegram("✅ <b>Бот перезапущен!</b> Парсю заказы каждые 2 минуты...")
     except Exception as e:
-        print(f"[!] Не удалось отправить тест в Telegram: {e}")
-
+        print(f"[!] Telegram: {e}")
     while True:
-        now = datetime.now().strftime("%H:%M:%S")
-        print(f"[{now}] Проверяю RSS...")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Проверяю...")
         stats["last_check"] = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         save_stats(stats)
         try:
-            count = process_feeds(conn, stats)
-            print(f"    Новых заказов: {count}")
+            count = process_all(conn, stats)
+            print(f"    Новых: {count}")
         except Exception as e:
             print(f"    Ошибка: {e}")
         time.sleep(CHECK_INTERVAL)
