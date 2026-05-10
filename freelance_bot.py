@@ -10,7 +10,7 @@ TELEGRAM_TOKEN = "8313581959:AAHeGEHYMA6LW_ao2B9V9DbmqyETEBosauY"
 TELEGRAM_CHAT  = "8618412497"
 GROQ_KEY       = "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"
 
-URLS =
+URLS = [
     "https://freelance.ru/project/search?q=&a=0&a=1&v=0&v=1&c=&c%5B%5D=116&c%5B%5D=4",
 ]
 
