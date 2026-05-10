@@ -74,19 +74,30 @@ def generate_cover_letter(title, description):
     try:
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {GROQ_KEY}",
+                "Content-Type": "application/json"
+            },
             json={
                 "model": "llama-3.3-70b-versatile",
-                "max_tokens": 600,
+                "max_tokens": 300,
                 "messages": [
-                {"role": "system", "content": f"Ты — Дмитрий Бушин, fullstack-разработчик. Пишешь отклики на фриланс от первого лица. Коротко, живо, без воды. Стек: Node.js, React, Next.js, Python, Telegram-боты, AI. Портфолио: trah1ch.dev"},
-                    {"role": "user", "content": f"Напиши отклик на заказ. Правила: максимум 3-4 предложения, начни сразу с того что можешь сделать, упомяни конкретные технологии подходящие под задачу, никаких фраз 'готов взяться' 'давайте обсудим' 'рад помочь', пиши как живой человек а не робот, в конце задай один короткий конкретный вопрос по задаче.\n\nЗаказ: {title}\nОписание: {description[:800]}"},
+                    {
+                        "role": "system",
+                        "content": "Ты — Дмитрий Бушин, fullstack-разработчик. Пишешь отклики на фриланс от первого лица. Коротко, живо, без воды. Стек: Node.js, React, Next.js, Python, Telegram-боты, AI. Портфолио: trah1ch.dev"
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Напиши отклик на заказ. Правила: максимум 3-4 предложения, начни сразу с того что можешь сделать, упомяни конкретные технологии подходящие под задачу, никаких фраз готов взяться давайте обсудим рад помочь, пиши как живой человек а не робот, в конце задай один короткий конкретный вопрос по задаче.\n\nЗаказ: {title}\nОписание: {description[:800]}"
+                    }
+                ]
+            },
             timeout=30
         )
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        return f"[Не удалось сгенерировать отклик: {e}]"
+        return f"[Ошибка: {e}]"
 
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -106,13 +117,13 @@ def scrape_page(url):
         resp = requests.get(url, headers=HEADERS, cookies=COOKIES, timeout=15)
         resp.encoding = "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
-        print(f"    Страница: {soup.title.string if soup.title else 'нет заголовка'}")
+        print(f"    Страница: {soup.title.string if soup.title else 'нет'}")
 
         items = (soup.select("div.b-post") or
                  soup.select("article.project") or
                  soup.select(".task-item") or
                  soup.select(".project"))
-        print(f"    Блоков найдено: {len(items)}")
+        print(f"    Блоков: {len(items)}")
 
         for item in items:
             title_tag = (item.select_one("h2 a") or item.select_one("h3 a") or
@@ -120,10 +131,11 @@ def scrape_page(url):
             if not title_tag:
                 continue
             title = title_tag.get_text(strip=True)
-            link  = title_tag.get("href", "")
+            link = title_tag.get("href", "")
             if link and not link.startswith("http"):
                 link = "https://freelance.ru" + link
-            desc_tag = (item.select_one(".b-post__body") or item.select_one(".description") or item.select_one("p"))
+            desc_tag = (item.select_one(".b-post__body") or
+                       item.select_one(".description") or item.select_one("p"))
             desc = desc_tag.get_text(strip=True) if desc_tag else ""
             budget_tag = item.select_one(".b-post__price") or item.select_one(".price")
             budget = budget_tag.get_text(strip=True) if budget_tag else ""
@@ -158,7 +170,12 @@ def process_all(conn, stats):
             except Exception as e:
                 print(f"    ❌ Ошибка: {e}")
             stats["total_jobs"] += 1
-            stats["jobs"].insert(0, {"title": job["title"], "link": job["link"], "time": datetime.now().strftime("%d.%m.%Y %H:%M"), "cover": cover[:200]})
+            stats["jobs"].insert(0, {
+                "title": job["title"],
+                "link": job["link"],
+                "time": datetime.now().strftime("%d.%m.%Y %H:%M"),
+                "cover": cover[:200]
+            })
             stats["jobs"] = stats["jobs"][:50]
             save_stats(stats)
             mark_seen(conn, job["id"])
